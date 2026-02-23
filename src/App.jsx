@@ -3,10 +3,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Select,
   SelectContent,
@@ -14,265 +10,207 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
-import { Lock, LogOut, Target, User, Settings2, CheckCircle2, Plus, Trash2 } from "lucide-react";
+import { LogOut } from "lucide-react";
 
-/**
- * AIRCH METAS — LOCAL MVP (sem banco) — METAS GENÉRICAS
- * Semana: SEG–SEX
- *
- * Admin cria N metas por usuário/semana:
- * - Nome custom (string)
- * - Tipo: COUNT (quantidade) ou DAYS (marca HOJE, com dias ativos Seg–Sex)
- * - Prioridade: PRIMARY ou EXTRA
- * - Bônus fixo ao bater
- *
- * Funcionário vê TODAS metas e registra:
- * - COUNT: lança quantidade
- * - DAYS: marca HOJE ✅ (só se dia estiver ativo)
- *
- * % trava em 100%, mas o "feito" pode passar do alvo (modo A).
- */
+const API_BASE = "https://airch-metas-api-production.up.railway.app"; // banco ligado
 
-const LS_KEY = "airch_metas_local_v5";
-const API_BASE = "http://localhost:3001"; // local only
-function apiEnabled() { return Boolean(API_BASE); }
-
-const COLORS = ["#111827", "#E5E7EB"]; // feito, falta
-
-function isoDate(d) { return d.toISOString().slice(0, 10); }
-function toLocalDateISO(d = new Date()) {
-  const x = new Date(d);
-  const tz = x.getTimezoneOffset() * 60000;
-  return new Date(x.getTime() - tz).toISOString().slice(0, 10);
+function apiEnabled() {
+  return Boolean(API_BASE);
 }
-function isWeekdayLocal(d = new Date()) {
-  const day = d.getDay(); // 1..5
-  return day >= 1 && day <= 5;
+
+async function apiFetch(path, options = {}) {
+  const token = localStorage.getItem("metas_token") || "";
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("application/json") ? res.json() : res.text();
 }
-function getWeekRangeMonFri(d = new Date()) {
-  const day = d.getDay();
+
+function isoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function getWeekRange(d = new Date()) {
+  // Semana SEG–SEX
+  const day = d.getDay(); // 0 dom .. 6 sáb
   const diffToMonday = (day + 6) % 7;
   const monday = new Date(d);
   monday.setDate(d.getDate() - diffToMonday);
   monday.setHours(0, 0, 0, 0);
   const friday = new Date(monday);
   friday.setDate(monday.getDate() + 4);
-  return { weekStart: isoDate(monday), weekEnd: isoDate(friday), monday };
+  return { weekStart: isoDate(monday), weekEnd: isoDate(friday) };
 }
-function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+
 function percent(done, target) {
   if (!target || target <= 0) return 0;
   return Math.round((done / target) * 100);
 }
-function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now()}`;
-}
-function brl(n) {
-  const x = Number(n || 0);
-  return x.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-function weekdayLabel(i) { return ["Seg", "Ter", "Qua", "Qui", "Sex"][i] || ""; }
 
-function loadStore() {
-  const raw = localStorage.getItem(LS_KEY);
-  if (raw) {
-    try { return JSON.parse(raw); } catch {}
-  }
-  const seed = {
-    users: [
-      { id: "u_admin", name: "Hugo (Admin)", username: "admin", password: "admin123", role: "ADMIN", active: true },
-      { id: "u_douglas", name: "Douglas", username: "douglas", password: "1234", role: "USER", active: true },
-      { id: "u_lucas", name: "Lucas", username: "lucas", password: "1234", role: "USER", active: true },
-    ],
-    goals: [],
-    tasks: [],
-  };
-  localStorage.setItem(LS_KEY, JSON.stringify(seed));
-  return seed;
-}
-function saveStore(store) { localStorage.setItem(LS_KEY, JSON.stringify(store)); }
-
-function sumQtyTasks(tasks, goalId) {
-  return tasks
-    .filter((t) => t.goalId === goalId && typeof t.qty === "number" && !t.dayDate)
-    .reduce((acc, t) => acc + (Number(t.qty) || 0), 0);
-}
-function countDaysDone(tasks, goalId) {
-  const set = new Set(
-    tasks.filter((t) => t.goalId === goalId && t.dayDate).map((t) => t.dayDate)
-  );
-  return set.size;
-}
 function formatDT(ts) {
   const d = new Date(ts);
   const pad = (x) => String(x).padStart(2, "0");
-  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`;
 }
 
-function goalBadge(g) {
-  return g.priority === "PRIMARY" ? "Principal" : "Extra";
+const COLORS = ["#111827", "#E5E7EB"]; // feito, falta
+
+function todayISO() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return isoDate(d);
+}
+
+function weekdayIndexISO(dateStr) {
+  // 0=Seg ... 4=Sex
+  const d = new Date(dateStr + "T00:00:00");
+  const day = d.getDay(); // 0 dom .. 6 sáb
+  const map = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4 }; // seg..sex
+  return map[day] ?? null;
 }
 
 export default function App() {
-  const [store, setStore] = useState(() => loadStore());
-  const [session, setSession] = useState(null);
+  const { weekStart, weekEnd } = useMemo(() => getWeekRange(new Date()), []);
+  const [session, setSession] = useState(null); // { id, role, name }
+  const [me, setMe] = useState(null);
 
-  const { weekStart, weekEnd } = useMemo(() => getWeekRangeMonFri(new Date()), []);
+  // Admin data
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [selectedUserGoals, setSelectedUserGoals] = useState([]);
 
+  // User data
+  const [myGoals, setMyGoals] = useState([]);
+  const [myTasksByGoal, setMyTasksByGoal] = useState({}); // goalId -> tasks[]
+
+  // auto login com token
   useEffect(() => {
-    if (!apiEnabled()) saveStore(store);
-  }, [store]);
+    if (!apiEnabled()) return;
+    const token = localStorage.getItem("metas_token");
+    if (!token) return;
+    (async () => {
+      try {
+        const m = await apiFetch("/api/me");
+        setMe(m);
+        setSession({ id: m.id, role: m.role, name: m.name });
+      } catch {
+        localStorage.removeItem("metas_token");
+        setMe(null);
+        setSession(null);
+      }
+    })();
+  }, []);
 
-  const me = useMemo(() => {
-    if (!session) return null;
-    return store.users.find((u) => u.id === session.userId) || null;
-  }, [session, store.users]);
-
-  function logout() { setSession(null); }
-
-  function resetData() {
-    const ok = confirm("Resetar metas e lançamentos? (Mantém usuários).");
-    if (!ok) return;
-    const fresh = loadStore();
-    fresh.goals = [];
-    fresh.tasks = [];
-    localStorage.setItem(LS_KEY, JSON.stringify(fresh));
-    setStore(fresh);
+  async function logout() {
+    localStorage.removeItem("metas_token");
+    setMe(null);
     setSession(null);
+    setAdminUsers([]);
+    setSelectedUserId("");
+    setSelectedUserGoals([]);
+    setMyGoals([]);
+    setMyTasksByGoal({});
   }
 
-  function getGoalsForUser(userId) {
-    return store.goals
-      .filter(
-        (g) =>
-          g.userId === userId &&
-          g.weekStart === weekStart &&
-          g.weekEnd === weekEnd &&
-          g.status === "ACTIVE"
-      )
-      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-  }
+  // load data after login
+  useEffect(() => {
+    if (!session) return;
 
-  function createGoal(payload) {
-    setStore((prev) => {
-      const goals = [
-        {
-          id: uid("goal"),
-          userId: payload.userId,
-          weekStart,
-          weekEnd,
-          name: payload.name.trim(),
-          goalType: payload.goalType, // COUNT | DAYS
-          priority: payload.priority, // PRIMARY | EXTRA
-          targetUnits: payload.goalType === "COUNT" ? Number(payload.targetUnits || 0) : 0,
-          targetDays: payload.goalType === "DAYS" ? Number(payload.targetDays || 0) : 0,
-          activeDays: payload.goalType === "DAYS" ? (payload.activeDays || [0,1,2,3,4]) : [],
-          bonus: Number(payload.bonus || 0),
-          status: "ACTIVE",
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        },
-        ...prev.goals,
-      ];
-      return { ...prev, goals };
-    });
-  }
-
-  function updateGoal(goalId, patch) {
-    setStore((prev) => {
-      const goals = prev.goals.map((g) => {
-        if (g.id !== goalId) return g;
-        const next = { ...g, ...patch, updatedAt: Date.now() };
-        // manter coerência
-        if (next.goalType === "COUNT") {
-          next.targetDays = 0;
-          next.activeDays = [];
+    (async () => {
+      try {
+        if (session.role === "ADMIN") {
+          const u = await apiFetch("/api/admin/users");
+          setAdminUsers(u.rows || []);
         } else {
-          next.targetUnits = 0;
-          if (!Array.isArray(next.activeDays) || next.activeDays.length === 0) next.activeDays = [0,1,2,3,4];
-          next.targetDays = next.activeDays.length; // meta = qtd dias ativos
+          await refreshMyData();
         }
-        return next;
-      });
-      return { ...prev, goals };
-    });
-  }
+      } catch (e) {
+        // auth issues
+        localStorage.removeItem("metas_token");
+        setMe(null);
+        setSession(null);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
 
-  function disableGoal(goalId) {
-    setStore((prev) => {
-      const goals = prev.goals.map((g) => (g.id === goalId ? { ...g, status: "INACTIVE", updatedAt: Date.now() } : g));
-      return { ...prev, goals };
-    });
-  }
+  async function refreshMyData() {
+    const g = await apiFetch(
+      `/api/my/goals?weekStart=${weekStart}&weekEnd=${weekEnd}`
+    );
+    const goals = g.rows || [];
+    setMyGoals(goals);
 
-  function addTaskCount({ userId, goalId, qty, note }) {
-    setStore((prev) => {
-      const tasks = [
-        { id: uid("task"), userId, goalId, qty: Number(qty), note: note || "", createdAt: Date.now() },
-        ...prev.tasks,
-      ];
-      return { ...prev, tasks };
-    });
-  }
-
-  function markDoneToday({ userId, goalId, goal, note }) {
-    const now = new Date();
-    const today = toLocalDateISO(now);
-
-    if (!isWeekdayLocal(now)) return { ok: false, reason: "Hoje não é dia útil (Seg–Sex)." };
-
-    const dayIndex = now.getDay() - 1; // seg=0..sex=4
-    if (!goal.activeDays?.includes(dayIndex)) {
-      return { ok: false, reason: "Hoje NÃO está ativo nessa meta (admin desmarcou o dia)." };
+    // carregar tasks por meta
+    const map = {};
+    for (const goal of goals) {
+      const t = await apiFetch(`/api/my/tasks?goalId=${goal.id}`);
+      map[goal.id] = t.rows || [];
     }
-
-    setStore((prev) => {
-      const exists = prev.tasks.some((t) => t.goalId === goalId && t.dayDate === today);
-      if (exists) return prev;
-
-      const tasks = [
-        { id: uid("task"), userId, goalId, qty: 1, dayDate: today, note: note || "", createdAt: Date.now() },
-        ...prev.tasks,
-      ];
-      return { ...prev, tasks };
-    });
-
-    return { ok: true };
+    setMyTasksByGoal(map);
   }
 
-  if (!me) {
+  if (!session) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <Login users={store.users.filter((u) => u.active)} onLogin={(payload) => setSession(payload)} />
+        <Login
+          onLogin={(payload) => {
+            setMe({ id: payload.id, role: payload.role, name: payload.name });
+            setSession({ id: payload.id, role: payload.role, name: payload.name });
+          }}
+        />
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <TopBar me={me} weekStart={weekStart} weekEnd={weekEnd} onLogout={logout} />
+      <TopBar
+        me={session}
+        weekStart={weekStart}
+        weekEnd={weekEnd}
+        onLogout={logout}
+      />
+
       <div className="max-w-6xl mx-auto p-4 md:p-6 space-y-4">
-        {me.role === "ADMIN" ? (
+        {session.role === "ADMIN" ? (
           <AdminView
-            store={store}
             weekStart={weekStart}
             weekEnd={weekEnd}
-            getGoalsForUser={getGoalsForUser}
-            onCreateGoal={createGoal}
-            onUpdateGoal={updateGoal}
-            onDisableGoal={disableGoal}
-            onReset={resetData}
+            users={adminUsers}
+            selectedUserId={selectedUserId}
+            setSelectedUserId={setSelectedUserId}
+            selectedUserGoals={selectedUserGoals}
+            setSelectedUserGoals={setSelectedUserGoals}
           />
         ) : (
           <UserView
-            me={me}
-            store={store}
             weekStart={weekStart}
             weekEnd={weekEnd}
-            goals={getGoalsForUser(me.id)}
-            onAddTaskCount={addTaskCount}
-            onMarkDoneToday={markDoneToday}
+            goals={myGoals}
+            tasksByGoal={myTasksByGoal}
+            onRefresh={refreshMyData}
           />
         )}
       </div>
@@ -285,25 +223,20 @@ function TopBar({ me, weekStart, weekEnd, onLogout }) {
     <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b">
       <div className="max-w-6xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-  <img
-  src="/logo-airch.png"
-  alt="Airch"
-  className="h-12 object-contain"
-/>
-
-
-  <div>
-    <div className="font-semibold">Metas &amp; Produção</div>
-    <div className="text-xs text-slate-500">
-      Semana: {weekStart} → {weekEnd} (Seg–Sex)
-    </div>
-  </div>
-</div>
-
+          <img
+            src="/logo-airch.png"
+            alt="Airch"
+            className="h-10 object-contain"
+          />
+          <div>
+            <div className="font-semibold">Metas &amp; Produção</div>
+            <div className="text-xs text-slate-500">
+              Semana: {weekStart} → {weekEnd} (Seg–Sex)
+            </div>
+          </div>
+        </div>
         <div className="flex items-center gap-3">
-          <Badge variant="secondary" className="gap-1">
-            <User className="h-3.5 w-3.5" /> {me.name}
-          </Badge>
+          <Badge variant="secondary">{me.name}</Badge>
           <Button variant="secondary" onClick={onLogout} className="gap-2">
             <LogOut className="h-4 w-4" /> Sair
           </Button>
@@ -313,37 +246,44 @@ function TopBar({ me, weekStart, weekEnd, onLogout }) {
   );
 }
 
-function Login({ users, onLogin }) {
+function Login({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault();
     setErr("");
-    const u = users.find((x) => x.username === username.trim() && x.password === password);
-    if (!u) return setErr("Usuário ou senha inválidos.");
-    onLogin({ userId: u.id, role: u.role, name: u.name });
+    try {
+      setLoading(true);
+      const data = await apiFetch("/api/login", {
+        method: "POST",
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      localStorage.setItem("metas_token", data.token);
+      onLogin({ id: data.user.id, role: data.user.role, name: data.user.name });
+    } catch {
+      setErr("Usuário ou senha inválidos.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <Card className="w-full max-w-md rounded-2xl shadow-sm">
       <CardContent className="p-6 space-y-4">
         <div className="flex flex-col items-center gap-2">
-  <img
-    src="/logo-airch.png"
-    alt="Airch"
-    className="h-24 object-contain"
-  />
-
-  <div className="text-center">
-    <div className="font-semibold text-lg">Entrar</div>
-    <div className="text-sm text-slate-500">
-      Sistema de Metas Airch
-    </div>
-  </div>
-</div>
-
+          <img
+            src="/logo-airch.png"
+            alt="Airch"
+            className="h-16 object-contain"
+          />
+          <div className="text-center">
+            <div className="font-semibold text-lg">Entrar</div>
+            <div className="text-sm text-slate-500">Sistema de Metas Airch</div>
+          </div>
+        </div>
 
         {err ? (
           <Alert variant="destructive">
@@ -355,13 +295,24 @@ function Login({ users, onLogin }) {
         <form onSubmit={submit} className="space-y-3">
           <div className="space-y-1">
             <Label>Usuário</Label>
-            <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="ex: admin" />
+            <Input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="ex: admin"
+            />
           </div>
           <div className="space-y-1">
             <Label>Senha</Label>
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="ex: admin123" />
+            <Input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="ex: admin123"
+            />
           </div>
-          <Button className="w-full">Entrar</Button>
+          <Button className="w-full" disabled={loading}>
+            {loading ? "Entrando..." : "Entrar"}
+          </Button>
         </form>
 
         <div className="text-xs text-slate-500">
@@ -374,208 +325,240 @@ function Login({ users, onLogin }) {
   );
 }
 
-/* ---------------- ADMIN ---------------- */
+function AdminView({
+  weekStart,
+  weekEnd,
+  users,
+  selectedUserId,
+  setSelectedUserId,
+  selectedUserGoals,
+  setSelectedUserGoals,
+}) {
+  const [loadingGoals, setLoadingGoals] = useState(false);
 
-function AdminView({ store, weekStart, weekEnd, getGoalsForUser, onCreateGoal, onUpdateGoal, onDisableGoal, onReset }) {
-  const users = store.users.filter((u) => u.role === "USER" && u.active);
-  const [selectedUserId, setSelectedUserId] = useState(users[0]?.id || "");
-  const goals = selectedUserId ? getGoalsForUser(selectedUserId) : [];
-
-  // form create
-  const [name, setName] = useState("Montar Kit");
+  // form nova meta
+  const [goalName, setGoalName] = useState("Montar Kits");
   const [goalType, setGoalType] = useState("COUNT"); // COUNT | DAYS
   const [priority, setPriority] = useState("PRIMARY"); // PRIMARY | EXTRA
   const [targetUnits, setTargetUnits] = useState("200");
-  const [activeDays, setActiveDays] = useState([0,1,2,3,4]);
+  const [days, setDays] = useState([0, 1, 2, 3, 4]); // seg..sex
   const [bonus, setBonus] = useState("0");
   const [msg, setMsg] = useState("");
 
-  useEffect(() => {
-    if (!users.length) return;
-    if (!selectedUserId) setSelectedUserId(users[0].id);
-  }, [users.length, selectedUserId]);
-
-  function toggleDay(i) {
-    setActiveDays((prev) => (prev.includes(i) ? prev.filter((x) => x !== i) : [...prev, i].sort()));
-  }
-
-  function create() {
-    const n = name.trim();
-    if (!n) return setMsg("Informe um nome para a meta.");
-    if (goalType === "COUNT") {
-      const q = Math.floor(Number(targetUnits));
-      if (!q || q <= 0) return setMsg("Quantidade inválida.");
-      onCreateGoal({
-        userId: selectedUserId,
-        name: n,
-        goalType,
-        priority,
-        targetUnits: q,
-        bonus: Number(bonus || 0),
-      });
-    } else {
-      if (!activeDays.length) return setMsg("Selecione ao menos 1 dia ativo.");
-      onCreateGoal({
-        userId: selectedUserId,
-        name: n,
-        goalType,
-        priority,
-        activeDays,
-        targetDays: activeDays.length,
-        bonus: Number(bonus || 0),
-      });
+  async function loadGoals(userId) {
+    if (!userId) return;
+    try {
+      setLoadingGoals(true);
+      const data = await apiFetch(
+        `/api/admin/goals?userId=${userId}&weekStart=${weekStart}&weekEnd=${weekEnd}`
+      );
+      setSelectedUserGoals(data.rows || []);
+    } finally {
+      setLoadingGoals(false);
     }
-    setMsg("Meta criada!");
-    setTimeout(() => setMsg(""), 900);
   }
+
+  useEffect(() => {
+    if (!selectedUserId) return;
+    loadGoals(selectedUserId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedUserId]);
+
+  async function createGoal() {
+    setMsg("");
+    if (!selectedUserId) {
+      setMsg("Selecione um colaborador.");
+      return;
+    }
+    if (!goalName.trim()) {
+      setMsg("Informe um nome da meta.");
+      return;
+    }
+    if (goalType === "COUNT") {
+      const n = Math.floor(Number(targetUnits));
+      if (!n || n <= 0) {
+        setMsg("Quantidade inválida.");
+        return;
+      }
+    } else {
+      if (!days.length) {
+        setMsg("Selecione os dias (Seg–Sex).");
+        return;
+      }
+    }
+
+    await apiFetch("/api/admin/goals", {
+      method: "POST",
+      body: JSON.stringify({
+        userId: Number(selectedUserId),
+        weekStart,
+        weekEnd,
+        name: goalName.trim(),
+        goalType,
+        priority,
+        targetUnits: goalType === "COUNT" ? Number(targetUnits) : 0,
+        activeDays: goalType === "DAYS" ? days : [],
+        bonus: Number(bonus || 0),
+      }),
+    });
+
+    setMsg("Meta criada!");
+    await loadGoals(selectedUserId);
+    setTimeout(() => setMsg(""), 1000);
+  }
+
+  const selectedUser = users.find((u) => String(u.id) === String(selectedUserId));
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="rounded-2xl">
-          <CardContent className="p-4">
-            <div className="text-sm text-slate-500">Colaboradores</div>
-            <div className="text-2xl font-semibold">{users.length}</div>
-          </CardContent>
-        </Card>
-        <Card className="rounded-2xl">
-          <CardContent className="p-4">
-            <div className="text-sm text-slate-500">Semana</div>
-            <div className="text-sm font-medium">{weekStart} → {weekEnd}</div>
-            <div className="text-xs text-slate-500">Você pode criar várias metas por pessoa.</div>
-          </CardContent>
-        </Card>
-        <Card className="rounded-2xl">
-          <CardContent className="p-4 flex items-center justify-between">
-            <div>
-              <div className="text-sm text-slate-500">Ações</div>
-              <div className="text-sm">Resetar metas/lançamentos</div>
-            </div>
-            <Button variant="secondary" onClick={onReset} className="gap-2">
-              <Settings2 className="h-4 w-4" /> Reset
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-
       <Card className="rounded-2xl">
         <CardContent className="p-4 md:p-6 space-y-4">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <div>
-              <div className="font-semibold">Criar meta (Admin)</div>
-              <div className="text-sm text-slate-500">Semana {weekStart} → {weekEnd}</div>
+              <div className="font-semibold text-lg">Painel do Admin</div>
+              <div className="text-sm text-slate-500">
+                Crie metas (principal e extras) por colaborador.
+              </div>
             </div>
-            <Badge variant="secondary">Personalize nome + tipo + prioridade</Badge>
+            <Badge variant="secondary">
+              Semana {weekStart} → {weekEnd}
+            </Badge>
           </div>
 
           <Separator />
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
-            <div className="space-y-1">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
               <Label>Colaborador</Label>
               <Select value={selectedUserId} onValueChange={setSelectedUserId}>
-                <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione" />
+                </SelectTrigger>
                 <SelectContent>
                   {users.map((u) => (
-                    <SelectItem value={u.id} key={u.id}>{u.name}</SelectItem>
+                    <SelectItem key={u.id} value={String(u.id)}>
+                      {u.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-
-            <div className="space-y-1">
-              <Label>Prioridade</Label>
-              <Select value={priority} onValueChange={setPriority}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="PRIMARY">Principal</SelectItem>
-                  <SelectItem value="EXTRA">Extra (bônus)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1 md:col-span-2">
-              <Label>Nome da meta</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Montar Kit / Montar pedidos do dia" />
-            </div>
-
-            <div className="space-y-1">
-              <Label>Tipo</Label>
-              <Select value={goalType} onValueChange={setGoalType}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="COUNT">Contagem (quantidade na semana)</SelectItem>
-                  <SelectItem value="DAYS">Por dia (marcar HOJE ✅)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1">
-              <Label>Bônus ao bater (R$)</Label>
-              <Input value={bonus} onChange={(e) => setBonus(e.target.value)} inputMode="decimal" placeholder="Ex: 30" />
-            </div>
-
-            {goalType === "COUNT" ? (
-              <div className="space-y-1 md:col-span-2">
-                <Label>Quantidade (meta semanal)</Label>
-                <Input value={targetUnits} onChange={(e) => setTargetUnits(e.target.value)} inputMode="numeric" placeholder="Ex: 200" />
-              </div>
-            ) : (
-              <div className="space-y-2 md:col-span-2">
-                <Label>Dias ativos (Seg–Sex)</Label>
-                <div className="flex gap-2 flex-wrap">
-                  {[0,1,2,3,4].map((i) => (
-                    <Button
-                      key={i}
-                      type="button"
-                      variant={activeDays.includes(i) ? "default" : "secondary"}
-                      onClick={() => toggleDay(i)}
-                    >
-                      {weekdayLabel(i)}
-                    </Button>
-                  ))}
-                </div>
+              {selectedUser ? (
                 <div className="text-xs text-slate-500">
-                  O alvo da meta diária será a quantidade de dias ativos (ex.: 3 dias ativos = meta 3).
+                  Selecionado: <span className="font-medium">{selectedUser.name}</span>
                 </div>
+              ) : null}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Prioridade</Label>
+                <Select value={priority} onValueChange={setPriority}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PRIMARY">Principal</SelectItem>
+                    <SelectItem value="EXTRA">Extra</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-            )}
 
-            <Button onClick={create} className="w-full md:col-span-2 gap-2">
-              <Plus className="h-4 w-4" /> Criar meta
-            </Button>
-
-            {msg ? <div className="text-xs text-slate-500 md:col-span-2">{msg}</div> : null}
+              <div className="space-y-2">
+                <Label>Tipo</Label>
+                <Select value={goalType} onValueChange={setGoalType}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="COUNT">Por contagem</SelectItem>
+                    <SelectItem value="DAYS">Por dia (Seg–Sex)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
           </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <div className="space-y-2 md:col-span-2">
+              <Label>Nome da meta</Label>
+              <Input value={goalName} onChange={(e) => setGoalName(e.target.value)} />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Bônus (R$)</Label>
+              <Input value={bonus} onChange={(e) => setBonus(e.target.value)} inputMode="numeric" />
+            </div>
+          </div>
+
+          {goalType === "COUNT" ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+              <div className="space-y-2">
+                <Label>Quantidade alvo</Label>
+                <Input
+                  value={targetUnits}
+                  onChange={(e) => setTargetUnits(e.target.value)}
+                  inputMode="numeric"
+                  placeholder="Ex: 250"
+                />
+              </div>
+              <div className="md:col-span-2 text-xs text-slate-500">
+                Ex: “Montar Kits” com meta de 200 unidades na semana.
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-slate-500">
+              Meta por dia: o colaborador marca “feito hoje” uma vez por dia.
+              (Padrão Seg–Sex)
+            </div>
+          )}
+
+          <Button onClick={createGoal} disabled={!selectedUserId}>
+            Criar meta
+          </Button>
+
+          {msg ? <div className="text-sm text-slate-600">{msg}</div> : null}
         </CardContent>
       </Card>
 
       <Card className="rounded-2xl">
-        <CardContent className="p-4 md:p-6 space-y-3">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
+        <CardContent className="p-4 md:p-6">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <div>
               <div className="font-semibold">Metas do colaborador</div>
               <div className="text-sm text-slate-500">
-                {users.find((u) => u.id === selectedUserId)?.name || ""}
+                {selectedUser ? selectedUser.name : "Selecione um colaborador"}
               </div>
             </div>
-            <Badge variant="secondary">{goals.length} metas</Badge>
+            {loadingGoals ? <Badge variant="secondary">Carregando…</Badge> : null}
           </div>
 
-          <Separator />
+          <Separator className="my-4" />
 
-          {goals.length === 0 ? (
-            <div className="text-sm text-slate-500">Nenhuma meta ativa nesta semana.</div>
+          {!selectedUserId ? (
+            <div className="text-sm text-slate-500">Selecione um colaborador acima.</div>
+          ) : selectedUserGoals.length === 0 ? (
+            <div className="text-sm text-slate-500">
+              Nenhuma meta criada ainda para esta semana.
+            </div>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {goals.map((g) => (
-                <AdminGoalCard
-                  key={g.id}
-                  goal={g}
-                  store={store}
-                  onUpdateGoal={onUpdateGoal}
-                  onDisableGoal={onDisableGoal}
-                />
+            <div className="space-y-2">
+              {selectedUserGoals.map((g) => (
+                <div key={g.id} className="p-3 rounded-2xl border bg-white">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-medium">
+                      {g.name}{" "}
+                      <span className="text-xs text-slate-500">
+                        ({g.priority === "PRIMARY" ? "Principal" : "Extra"})
+                      </span>
+                    </div>
+                    <Badge variant="secondary">
+                      {g.goalType === "COUNT" ? `Alvo: ${g.targetUnits}` : "Por dia"}
+                    </Badge>
+                  </div>
+                  {Number(g.bonus) > 0 ? (
+                    <div className="text-xs text-slate-500 mt-1">Bônus: R$ {Number(g.bonus).toFixed(2)}</div>
+                  ) : null}
+                </div>
               ))}
             </div>
           )}
@@ -585,250 +568,129 @@ function AdminView({ store, weekStart, weekEnd, getGoalsForUser, onCreateGoal, o
   );
 }
 
-function AdminGoalCard({ goal, store, onUpdateGoal, onDisableGoal }) {
-  const done = goal.goalType === "DAYS" ? countDaysDone(store.tasks, goal.id) : sumQtyTasks(store.tasks, goal.id);
-  const target = goal.goalType === "DAYS" ? (goal.targetDays || 0) : (goal.targetUnits || 0);
+function UserView({ weekStart, weekEnd, goals, tasksByGoal, onRefresh }) {
+  const [err, setErr] = useState("");
 
-  const pct = clamp(percent(done, target), 0, 100);
-  const remaining = Math.max(target - done, 0);
-
-  const [name, setName] = useState(goal.name);
-  const [bonus, setBonus] = useState(String(goal.bonus || 0));
-  const [targetUnits, setTargetUnits] = useState(String(goal.targetUnits || 0));
-  const [activeDays, setActiveDays] = useState(goal.activeDays?.length ? goal.activeDays : [0,1,2,3,4]);
-
-  useEffect(() => {
-    setName(goal.name);
-    setBonus(String(goal.bonus || 0));
-    setTargetUnits(String(goal.targetUnits || 0));
-    setActiveDays(goal.activeDays?.length ? goal.activeDays : [0,1,2,3,4]);
-  }, [goal.id]);
-
-  function toggleDay(i) {
-    setActiveDays((prev) => (prev.includes(i) ? prev.filter((x) => x !== i) : [...prev, i].sort()));
+  async function addCount(goalId, qty, note) {
+    await apiFetch("/api/my/tasks/count", {
+      method: "POST",
+      body: JSON.stringify({ goalId, qty, note: note || "" }),
+    });
+    await onRefresh();
   }
 
-  function save() {
-    const n = name.trim();
-    if (!n) return;
-    if (goal.goalType === "COUNT") {
-      const q = Math.floor(Number(targetUnits));
-      if (!q || q <= 0) return;
-      onUpdateGoal(goal.id, { name: n, bonus: Number(bonus || 0), targetUnits: q });
-    } else {
-      if (!activeDays.length) return;
-      onUpdateGoal(goal.id, { name: n, bonus: Number(bonus || 0), activeDays, targetDays: activeDays.length });
-    }
-  }
-
-  return (
-    <Card className="rounded-2xl">
-      <CardContent className="p-4 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="font-semibold">{goal.name}</div>
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary">{goalBadge(goal)}</Badge>
-            <Badge variant="secondary">{pct}%</Badge>
-            <Button variant="secondary" size="sm" onClick={() => onDisableGoal(goal.id)} className="gap-1">
-              <Trash2 className="h-4 w-4" /> Desativar
-            </Button>
-          </div>
-        </div>
-
-        <div className="text-sm text-slate-500">
-          Feito <span className="font-medium text-slate-900">{done}</span> / Meta{" "}
-          <span className="font-medium text-slate-900">{target}</span> • Faltam {remaining}
-          {Number(goal.bonus || 0) > 0 ? <span className="text-slate-500"> • Bônus {brl(goal.bonus)}</span> : null}
-        </div>
-        <Progress value={pct} />
-
-        <Separator />
-
-        <div className="space-y-2">
-          <div className="space-y-1">
-            <Label>Nome</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-
-          <div className="space-y-1">
-            <Label>Bônus ao bater (R$)</Label>
-            <Input value={bonus} onChange={(e) => setBonus(e.target.value)} inputMode="decimal" />
-          </div>
-
-          {goal.goalType === "COUNT" ? (
-            <div className="space-y-1">
-              <Label>Meta semanal (quantidade)</Label>
-              <Input value={targetUnits} onChange={(e) => setTargetUnits(e.target.value)} inputMode="numeric" />
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <Label>Dias ativos (Seg–Sex)</Label>
-              <div className="flex gap-2 flex-wrap">
-                {[0,1,2,3,4].map((i) => (
-                  <Button
-                    key={i}
-                    type="button"
-                    variant={activeDays.includes(i) ? "default" : "secondary"}
-                    onClick={() => toggleDay(i)}
-                  >
-                    {weekdayLabel(i)}
-                  </Button>
-                ))}
-              </div>
-              <div className="text-xs text-slate-500">
-                Meta = quantidade de dias ativos.
-              </div>
-            </div>
-          )}
-
-          <Button onClick={save} className="w-full">Salvar ajustes</Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-/* ---------------- USER ---------------- */
-
-function UserView({ me, store, weekStart, weekEnd, goals, onAddTaskCount, onMarkDoneToday }) {
-  const sorted = useMemo(() => {
-    const pri = goals.filter((g) => g.priority === "PRIMARY");
-    const ext = goals.filter((g) => g.priority === "EXTRA");
-    return [...pri, ...ext];
-  }, [goals]);
-
-  if (!sorted.length) {
-    return (
-      <Alert>
-        <AlertTitle>Sem metas definidas</AlertTitle>
-        <AlertDescription>Peça para o administrador criar suas metas desta semana.</AlertDescription>
-      </Alert>
-    );
+  async function markDay(goalId) {
+    await apiFetch("/api/my/tasks/day", {
+      method: "POST",
+      body: JSON.stringify({ goalId, dayDate: todayISO(), note: "" }),
+    });
+    await onRefresh();
   }
 
   return (
     <div className="space-y-4">
+      {goals.length === 0 ? (
+        <Alert>
+          <AlertTitle>Sem metas nesta semana</AlertTitle>
+          <AlertDescription>
+            Peça para o administrador criar suas metas (principal e extras) para {weekStart} → {weekEnd}.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {sorted.map((g) => (
+        {goals.map((g) => (
           <GoalCard
             key={g.id}
             goal={g}
-            me={me}
-            store={store}
-            weekStart={weekStart}
-            weekEnd={weekEnd}
-            onAddTaskCount={onAddTaskCount}
-            onMarkDoneToday={onMarkDoneToday}
+            tasks={tasksByGoal[g.id] || []}
+            onAddCount={addCount}
+            onMarkDay={markDay}
+            setErr={setErr}
           />
         ))}
       </div>
 
-      <Card className="rounded-2xl">
-        <CardContent className="p-4 md:p-6">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div>
-              <div className="font-semibold">Histórico</div>
-              <div className="text-sm text-slate-500">Últimos 50 lançamentos.</div>
-            </div>
-            <Badge variant="secondary">
-              {store.tasks.filter((t) => sorted.some((g) => g.id === t.goalId)).length} itens
-            </Badge>
-          </div>
-
-          <Separator className="my-4" />
-
-          {store.tasks.filter((t) => sorted.some((g) => g.id === t.goalId)).length === 0 ? (
-            <div className="text-sm text-slate-500">Sem registros ainda.</div>
-          ) : (
-            <div className="space-y-2">
-              {store.tasks
-                .filter((t) => sorted.some((g) => g.id === t.goalId))
-                .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-                .slice(0, 50)
-                .map((t) => (
-                  <div key={t.id} className="flex items-start justify-between gap-3 p-3 rounded-2xl border bg-white">
-                    <div>
-                      <div className="font-medium">
-                        {sorted.find((g) => g.id === t.goalId)?.name || "Meta"}
-                      </div>
-                      <div className="text-xs text-slate-500">
-                        {formatDT(t.createdAt)} {t.dayDate ? `• Dia: ${t.dayDate}` : ""}
-                      </div>
-                      {t.note ? <div className="text-xs text-slate-500 mt-1">Obs: {t.note}</div> : null}
-                    </div>
-                    <Badge className="rounded-full">{t.dayDate ? "✅" : `+${t.qty}`}</Badge>
-                  </div>
-                ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {err ? (
+        <Alert variant="destructive">
+          <AlertTitle>Erro</AlertTitle>
+          <AlertDescription>{err}</AlertDescription>
+        </Alert>
+      ) : null}
     </div>
   );
 }
 
-function GoalCard({ goal, me, store, weekStart, weekEnd, onAddTaskCount, onMarkDoneToday }) {
+function GoalCard({ goal, tasks, onAddCount, onMarkDay, setErr }) {
   const [qty, setQty] = useState("");
   const [note, setNote] = useState("");
-  const [err, setErr] = useState("");
-  const [okMsg, setOkMsg] = useState("");
+  const isCount = goal.goalType === "COUNT";
 
-  const done = useMemo(() => {
-    if (goal.goalType === "DAYS") return countDaysDone(store.tasks, goal.id);
-    return sumQtyTasks(store.tasks, goal.id);
-  }, [store.tasks, goal.id, goal.goalType]);
+  // progresso
+  const doneCount = isCount
+    ? tasks.reduce((acc, t) => acc + (Number(t.qty) || 0), 0)
+    : 0;
 
-  const target = goal.goalType === "DAYS" ? (goal.targetDays || 0) : (goal.targetUnits || 0);
+  const doneDaysSet = !isCount
+    ? new Set((tasks || []).map((t) => t.dayDate).filter(Boolean))
+    : new Set();
+
+  const doneDays = doneDaysSet.size;
+
+  const target = isCount ? Number(goal.targetUnits || 0) : Number(goal.targetDays || 5);
+  const done = isCount ? doneCount : doneDays;
   const remaining = Math.max(target - done, 0);
-  const pct = clamp(percent(done, target), 0, 100);
-  const achieved = target > 0 && done >= target;
+  const pct = percent(done, target);
 
   const chartData = useMemo(() => {
     if (!target || target <= 0) return [{ name: "Feito", value: 0 }, { name: "Falta", value: 1 }];
     return [{ name: "Feito", value: Math.max(done, 0) }, { name: "Falta", value: Math.max(remaining, 0) }];
   }, [done, remaining, target]);
 
-  function submitCount(e) {
+  async function submitCount(e) {
     e.preventDefault();
     setErr("");
-    setOkMsg("");
+
     const q = Math.floor(Number(qty));
-    if (!q || q <= 0) return setErr("Informe uma quantidade válida.");
-    onAddTaskCount({ userId: me.id, goalId: goal.id, qty: q, note });
+    if (!q || q <= 0) {
+      setErr("Informe uma quantidade válida.");
+      return;
+    }
+    await onAddCount(goal.id, q, note);
     setQty("");
     setNote("");
-    setOkMsg("Lançado!");
-    setTimeout(() => setOkMsg(""), 900);
   }
 
-  function markToday() {
-    setErr("");
-    setOkMsg("");
-    const result = onMarkDoneToday({ userId: me.id, goalId: goal.id, goal, note });
-    if (!result?.ok) return setErr(result?.reason || "Não foi possível marcar hoje.");
-    setNote("");
-    setOkMsg("Marcado como feito hoje ✅");
-    setTimeout(() => setOkMsg(""), 1200);
-  }
+  const idx = weekdayIndexISO(todayISO());
+  const canMarkToday = idx !== null && idx >= 0 && idx <= 4; // seg..sex
+  const alreadyMarkedToday = doneDaysSet.has(todayISO());
 
   return (
     <Card className="rounded-2xl">
       <CardContent className="p-4 md:p-6 space-y-4">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex items-start justify-between gap-2">
           <div>
             <div className="font-semibold text-lg">{goal.name}</div>
-            <div className="text-sm text-slate-500">
-              {goalBadge(goal)} • Semana {weekStart} → {weekEnd}
+            <div className="text-xs text-slate-500">
+              {goal.priority === "PRIMARY" ? "Meta principal" : "Meta extra"} •{" "}
+              {isCount ? "Por contagem" : "Por dia (Seg–Sex)"}
             </div>
           </div>
           <Badge variant="secondary">{pct}%</Badge>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
-          <div className="h-44 md:h-52">
+          <div className="h-44">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={chartData} dataKey="value" innerRadius={54} outerRadius={78} paddingAngle={2} stroke="none">
+                <Pie
+                  data={chartData}
+                  dataKey="value"
+                  innerRadius={48}
+                  outerRadius={70}
+                  paddingAngle={2}
+                  stroke="none"
+                >
                   {chartData.map((_, i) => (
                     <Cell key={i} fill={COLORS[i]} />
                   ))}
@@ -837,87 +699,93 @@ function GoalCard({ goal, me, store, weekStart, weekEnd, onAddTaskCount, onMarkD
             </ResponsiveContainer>
           </div>
 
-          <div className="space-y-3">
-            <div className="text-sm text-slate-500">
-              Feito <span className="font-semibold text-slate-900">{done}</span> / Meta{" "}
-              <span className="font-semibold text-slate-900">{target}</span>
+          <div className="space-y-2">
+            <div className="text-sm text-slate-600">
+              Feito <span className="font-semibold text-slate-900">{done}</span> /{" "}
+              Meta <span className="font-semibold text-slate-900">{target}</span>
+              <span className="text-slate-500"> • Faltam {remaining}</span>
             </div>
-            <Progress value={pct} />
-
-            <div className="p-3 rounded-2xl bg-slate-900 text-white flex items-center justify-between">
-              <div>
-                <div className="text-xs text-slate-200">Faltam</div>
-                <div className="text-2xl font-semibold">{remaining}</div>
-              </div>
-              {achieved ? (
-                <Badge className="rounded-full bg-white text-slate-900">Meta batida ✅</Badge>
-              ) : null}
-            </div>
-
-            {Number(goal.bonus || 0) > 0 ? (
+            <Progress value={clamp(pct, 0, 100)} />
+            {Number(goal.bonus) > 0 ? (
               <div className="text-xs text-slate-500">
-                Bônus ao bater: <span className="font-medium text-slate-900">{brl(goal.bonus)}</span>
-                {achieved ? <span className="text-slate-500"> • garantido ✅</span> : null}
-              </div>
-            ) : null}
-
-            {goal.goalType === "DAYS" ? (
-              <div className="text-xs text-slate-500">
-                Marque <span className="font-medium text-slate-900">HOJE</span> (somente se o admin ativou o dia).
+                Bônus ao bater: <span className="font-medium">R$ {Number(goal.bonus).toFixed(2)}</span>
               </div>
             ) : null}
           </div>
         </div>
 
-        {err ? (
-          <Alert variant="destructive">
-            <AlertTitle>Erro</AlertTitle>
-            <AlertDescription>{err}</AlertDescription>
-          </Alert>
-        ) : null}
+        <Separator />
 
-        {okMsg ? (
-          <Alert>
-            <AlertTitle>Ok</AlertTitle>
-            <AlertDescription>{okMsg}</AlertDescription>
-          </Alert>
-        ) : null}
+        {isCount ? (
+          <form onSubmit={submitCount} className="space-y-3">
+            <div className="space-y-1">
+              <Label>Adicionar quantidade feita</Label>
+              <Input
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+                inputMode="numeric"
+                placeholder="Ex: 25"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Observação (opcional)</Label>
+              <Input
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Ex: faltou material, etc"
+              />
+            </div>
+            <Button className="w-full">Registrar</Button>
+          </form>
+        ) : (
+          <div className="space-y-2">
+            <div className="text-sm text-slate-600">
+              Marque “feito hoje” (1 vez por dia). Hoje: <span className="font-medium">{todayISO()}</span>
+            </div>
+            <Button
+              className="w-full"
+              variant={alreadyMarkedToday ? "secondary" : "default"}
+              disabled={!canMarkToday || alreadyMarkedToday}
+              onClick={() => onMarkDay(goal.id)}
+            >
+              {alreadyMarkedToday ? "Já marcado hoje ✅" : "Marcar como feito hoje"}
+            </Button>
+            {!canMarkToday ? (
+              <div className="text-xs text-slate-500">
+                Fora de Seg–Sex não conta para a meta diária.
+              </div>
+            ) : null}
+          </div>
+        )}
 
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label>Observação (opcional)</Label>
-            <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Ex: faltou material, etc" />
+        <Separator />
+
+        <div>
+          <div className="flex items-center justify-between">
+            <div className="font-medium">Histórico</div>
+            <Badge variant="secondary">{tasks.length}</Badge>
           </div>
 
-          {goal.goalType === "DAYS" ? (
-            <Button className="w-full gap-2" onClick={markToday}>
-              <CheckCircle2 className="h-4 w-4" /> Marcar como FEITO HOJE
-            </Button>
+          {tasks.length === 0 ? (
+            <div className="text-sm text-slate-500 mt-2">Sem registros ainda.</div>
           ) : (
-            <form onSubmit={submitCount} className="space-y-3">
-              <div className="space-y-1">
-                <Label>Quantidade</Label>
-                <Input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="numeric" placeholder="Ex: 25" />
-              </div>
-              <Button className="w-full">Registrar quantidade</Button>
-            </form>
+            <div className="space-y-2 mt-2">
+              {tasks.slice(0, 20).map((t) => (
+                <div key={t.id} className="p-3 rounded-2xl border bg-white flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">
+                      {isCount ? `+${t.qty}` : `Dia marcado: ${t.dayDate}`}
+                    </div>
+                    <div className="text-xs text-slate-500">{formatDT(t.createdAt)}</div>
+                    {t.note ? <div className="text-xs text-slate-500 mt-1">Obs: {t.note}</div> : null}
+                  </div>
+                  <Badge className="rounded-full">{isCount ? `+${t.qty}` : "OK"}</Badge>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </CardContent>
     </Card>
   );
 }
-
-/* -------- Dev tests -------- */
-function runDevTests() {
-  try {
-    console.assert(percent(50, 100) === 50, "percent(50,100) deveria ser 50");
-    console.assert(clamp(120, 0, 100) === 100, "clamp deveria limitar em 100");
-    const d = new Date("2026-02-18T12:00:00");
-    const r = getWeekRangeMonFri(d);
-    console.assert(r.weekStart && r.weekEnd, "range da semana inválido");
-  } catch (e) {
-    console.warn("Dev tests falharam:", e);
-  }
-}
-if (typeof import.meta !== "undefined" && import.meta.env?.DEV) runDevTests();
