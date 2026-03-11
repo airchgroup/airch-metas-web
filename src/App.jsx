@@ -35,7 +35,9 @@ async function apiFetch(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    const err = new Error(text || `HTTP ${res.status}`);
+    err.status = res.status; // ← guarda o status para tratar 401 especificamente
+    throw err;
   }
   const ct = res.headers.get("content-type") || "";
   return ct.includes("application/json") ? res.json() : res.text();
@@ -94,6 +96,7 @@ export default function App() {
   const { weekStart, weekEnd } = useMemo(() => getWeekRange(new Date()), []);
   const [session, setSession] = useState(null); // { id, role, name }
   const [me, setMe] = useState(null);
+  const [loadingSession, setLoadingSession] = useState(true); // ← novo: aguarda verificação inicial
 
   // Admin data
   const [adminUsers, setAdminUsers] = useState([]);
@@ -106,18 +109,27 @@ export default function App() {
 
   // auto login com token
   useEffect(() => {
-    if (!apiEnabled()) return;
+    if (!apiEnabled()) {
+      setLoadingSession(false);
+      return;
+    }
     const token = localStorage.getItem("metas_token");
-    if (!token) return;
+    if (!token) {
+      setLoadingSession(false);
+      return;
+    }
     (async () => {
       try {
         const m = await apiFetch("/api/me");
         setMe(m);
         setSession({ id: m.id, role: m.role, name: m.name });
       } catch {
+        // só remove o token se realmente inválido
         localStorage.removeItem("metas_token");
         setMe(null);
         setSession(null);
+      } finally {
+        setLoadingSession(false); // ← libera a tela só depois de verificar
       }
     })();
   }, []);
@@ -146,10 +158,14 @@ export default function App() {
           await refreshMyData();
         }
       } catch (e) {
-        // auth issues
-        localStorage.removeItem("metas_token");
-        setMe(null);
-        setSession(null);
+        // ← CORREÇÃO PRINCIPAL: só desloga se for erro de autenticação (401)
+        // Erros de rede ou outros problemas NÃO derrubam a sessão
+        if (e.status === 401) {
+          localStorage.removeItem("metas_token");
+          setMe(null);
+          setSession(null);
+        }
+        // outros erros: mantém sessão, usuário pode tentar de novo
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -169,6 +185,15 @@ export default function App() {
       map[goal.id] = t.rows || [];
     }
     setMyTasksByGoal(map);
+  }
+
+  // ← enquanto verifica sessão inicial, não mostra nada (evita flash de login)
+  if (loadingSession) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-slate-400 text-sm">Carregando...</div>
+      </div>
+    );
   }
 
   if (!session) {
@@ -502,12 +527,12 @@ function AdminView({
                 />
               </div>
               <div className="md:col-span-2 text-xs text-slate-500">
-                Ex: “Montar Kits” com meta de 200 unidades na semana.
+                Ex: "Montar Kits" com meta de 200 unidades na semana.
               </div>
             </div>
           ) : (
             <div className="text-xs text-slate-500">
-              Meta por dia: o colaborador marca “feito hoje” uma vez por dia.
+              Meta por dia: o colaborador marca "feito hoje" uma vez por dia.
               (Padrão Seg–Sex)
             </div>
           )}
@@ -740,7 +765,7 @@ function GoalCard({ goal, tasks, onAddCount, onMarkDay, setErr }) {
         ) : (
           <div className="space-y-2">
             <div className="text-sm text-slate-600">
-              Marque “feito hoje” (1 vez por dia). Hoje: <span className="font-medium">{todayISO()}</span>
+              Marque "feito hoje" (1 vez por dia). Hoje: <span className="font-medium">{todayISO()}</span>
             </div>
             <Button
               className="w-full"
